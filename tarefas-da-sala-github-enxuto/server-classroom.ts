@@ -1,0 +1,9 @@
+import { env } from 'cloudflare:workers';
+import { getChatGPTUser } from '@/app/chatgpt-auth';
+import { ClassData } from './classroom';
+import initialClassroom from './initial-classroom.json';
+export function db(){if(!env.DB)throw new Error('Banco de dados indisponível. Tente novamente.');return env.DB;}
+export async function viewer(){const user=await getChatGPTUser();if(!user)throw new Error('AUTH');const d=db();await d.prepare("INSERT OR IGNORE INTO members (id,name,email,role) SELECT ?,?,?,CASE WHEN EXISTS(SELECT 1 FROM members) THEN 'Aluno' ELSE 'Administrador' END").bind(user.userId,user.displayName,user.email).run();return await d.prepare('SELECT * FROM members WHERE id=?').bind(user.userId).first<{id:string;name:string;email:string;role:string}>();}
+export async function state(){const d=db();await d.prepare('INSERT OR IGNORE INTO classroom (id,data,revision) VALUES (1,?,0)').bind(JSON.stringify(initialClassroom)).run();const row=await d.prepare('SELECT data,revision FROM classroom WHERE id=1').first<{data:string;revision:number}>();if(!row)throw new Error('Dados indisponíveis');return {data:JSON.parse(row.data) as ClassData,revision:row.revision};}
+export async function change(fn:(data:ClassData)=>void){for(let i=0;i<5;i++){const s=await state();fn(s.data);const result=await db().prepare('UPDATE classroom SET data=?,revision=revision+1 WHERE id=1 AND revision=?').bind(JSON.stringify(s.data),s.revision).run();if(result.meta.changes)return;}throw new Error('Outra pessoa está editando. Tente salvar novamente.');}
+export function failure(e:unknown){const msg=e instanceof Error?e.message:'Falha ao salvar. Tente novamente.';if(msg==='AUTH')return Response.json({error:'Entre com sua conta para acessar a turma.'},{status:401});console.error(e);return Response.json({error:msg},{status:400});}
